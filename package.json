@@ -1,0 +1,33 @@
+{
+  "name": "tripadvisor-crawler",
+  "version": "1.0.0",
+  "description": "TripAdvisor review scraper using Playwright with AdsPower anti-detection",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "ts-node-dev --respawn src/index.ts",
+    "build": "tsc",
+    "lint": "eslint . --ext .ts",
+    "scrape": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "axios": "^1.9.0",
+    "playwright": "^1.49.0",
+    "chalk": "^4.1.2",
+    "dotenv": "^16.5.0",
+    "csv-writer": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.2.1",
+    "prettier": "^3.3.3",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.6.3"
+  },
+  "license": "MIT"
+}
