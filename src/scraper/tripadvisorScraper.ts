@@ -8,6 +8,7 @@ export class TripAdvisorScraper {
   private browser: Browser | null = null;
   private page: Page | null = null;
   private profileId: string | null = null;
+  private profileName: string | null = null;
   private cache: ReviewCache | null = null;
 
   async initialize(profileId: string): Promise<void> {
@@ -15,6 +16,9 @@ export class TripAdvisorScraper {
       console.log(chalk.blue('🚀 Initializing TripAdvisor scraper...'));
       
       console.log(chalk.green(`📋 Using profile: (${profileId})`));
+      
+      // Store profile for parallel processing
+      this.profileName = profileId;
       
       // Start browser through AdsPower
       const { wsEndpoint } = await openBrowser(profileId);
@@ -36,60 +40,94 @@ export class TripAdvisorScraper {
     }
   }
 
-  async scrapeMultipleUrls(urls: string[], maxReviewsPerUrl?: number): Promise<ScrapingResult[]> {
-    const allResults: ScrapingResult[] = [];
-    
-    console.log(chalk.blue.bold(`🚀 Starting batch scraping for ${urls.length} URLs...`));
+  async scrapeMultipleUrls(urls: string[], maxReviewsPerUrl?: number, parallelUrls: number = 3): Promise<ScrapingResult[]> {
+    console.log(chalk.blue.bold(`🚀 Starting parallel batch scraping for ${urls.length} URLs...`));
+    console.log(chalk.blue(`⚡ Processing up to ${Math.min(parallelUrls, urls.length)} URLs simultaneously`));
     console.log(chalk.blue('=========================================\n'));
 
-    for (let i = 0; i < urls.length; i++) {
-      const url = urls[i];
-      console.log(chalk.cyan.bold(`\n📍 Processing URL ${i + 1}/${urls.length}`));
-      console.log(chalk.cyan(`🔗 ${url}`));
-      console.log(chalk.cyan('─'.repeat(80)));
-
-      try {
-        const result = await this.scrapeReviews(url, maxReviewsPerUrl);
-        allResults.push(result);
+    // Process URLs in parallel batches
+    const results: ScrapingResult[] = [];
+    
+    for (let i = 0; i < urls.length; i += parallelUrls) {
+      const batch = urls.slice(i, i + parallelUrls);
+      console.log(chalk.cyan.bold(`\n📦 Processing batch ${Math.floor(i / parallelUrls) + 1} (${batch.length} URLs)`));
+      
+      // Process batch in parallel
+      const batchPromises = batch.map(async (url, batchIndex) => {
+        const globalIndex = i + batchIndex;
+        console.log(chalk.cyan(`🔗 [${globalIndex + 1}/${urls.length}] Starting: ${url}`));
         
-        console.log(chalk.green(`✅ URL ${i + 1}/${urls.length} completed successfully`));
-        console.log(chalk.green(`📊 Reviews collected: ${result.scrapedReviews}`));
-        
-        // Add delay between URLs to be respectful
-        if (i < urls.length - 1) {
-          console.log(chalk.yellow('⏳ Waiting before next URL...'));
-          await this.randomDelay(3000, 6000);
+        try {
+          // Create a new scraper instance for each URL to avoid conflicts
+          const scraper = new TripAdvisorScraper();
+          if (this.profileName) {
+            await scraper.initialize(this.profileName);
+          }
+          
+          const result = await scraper.scrapeReviews(url, maxReviewsPerUrl);
+          
+          // Cleanup the temporary scraper
+          await scraper.cleanup();
+          
+          console.log(chalk.green(`✅ [${globalIndex + 1}/${urls.length}] Completed: ${result.scrapedReviews} reviews`));
+          return result;
+        } catch (error) {
+          console.error(chalk.red(`❌ [${globalIndex + 1}/${urls.length}] Failed:`), error);
+          
+          return {
+            url,
+            totalReviews: 0,
+            scrapedReviews: 0,
+            businessName: '',
+            businessLocation: '',
+            overallRating: '',
+            scrapedAt: new Date().toISOString(),
+            reviews: [],
+            error: error instanceof Error ? error.message : 'Unknown error'
+          };
         }
-        
-      } catch (error) {
-        console.error(chalk.red(`❌ Error processing URL ${i + 1}/${urls.length}:`), error);
-        // Continue with next URL even if one fails
-        const failedResult: ScrapingResult = {
-          url,
+      });
+      
+      // Wait for batch to complete
+      const batchResults = await Promise.allSettled(batchPromises);
+      const batchData = batchResults.map(result => 
+        result.status === 'fulfilled' ? result.value : {
+          url: 'unknown',
           totalReviews: 0,
           scrapedReviews: 0,
-          reviews: [],
+          businessName: '',
+          businessLocation: '',
+          overallRating: '',
           scrapedAt: new Date().toISOString(),
-          error: error instanceof Error ? error.message : 'Unknown error'
-        };
-        allResults.push(failedResult);
+          reviews: [],
+          error: 'Promise rejected'
+        }
+      );
+      
+      results.push(...batchData);
+      
+      // Add delay between batches to avoid overwhelming the system
+      if (i + parallelUrls < urls.length) {
+        console.log(chalk.yellow(`⏳ Waiting before next batch...`));
+        await this.randomDelay(1000, 2000);
       }
     }
 
     // Summary
-    console.log(chalk.green.bold('\n🎉 Batch Scraping Complete!'));
-    console.log(chalk.green('=========================================='));
-    const totalReviews = allResults.reduce((sum, result) => sum + result.scrapedReviews, 0);
-    const successfulUrls = allResults.filter(result => !result.error).length;
+    console.log(chalk.green.bold('\n🎉 Parallel Batch Scraping Complete!'));
+    console.log(chalk.green('================================================'));
+    const totalReviews = results.reduce((sum, result) => sum + result.scrapedReviews, 0);
+    const successfulUrls = results.filter(result => !result.error).length;
     console.log(chalk.green(`✅ Successfully processed: ${successfulUrls}/${urls.length} URLs`));
     console.log(chalk.green(`📊 Total reviews collected: ${totalReviews}`));
+    console.log(chalk.green(`⚡ Parallel efficiency: ${parallelUrls}x faster than sequential`));
 
     if (successfulUrls < urls.length) {
-      const failedUrls = allResults.filter(result => result.error).length;
+      const failedUrls = results.filter(result => result.error).length;
       console.log(chalk.yellow(`⚠️  Failed URLs: ${failedUrls}`));
     }
 
-    return allResults;
+    return results;
   }
 
   async scrapeReviews(url: string, maxReviews?: number): Promise<ScrapingResult> {
@@ -111,7 +149,7 @@ export class TripAdvisorScraper {
       console.log(chalk.green('✅ Page loaded successfully'));
       
       // Wait for the page to load and process any blocking screens
-      await this.randomDelay(3000, 5000);
+      await this.randomDelay(1000, 2000);
       
       // Trigger dynamic content loading
       await this.triggerContentLoading();
@@ -165,7 +203,7 @@ export class TripAdvisorScraper {
       // Check for captcha
       const captchaSelectors = ['.g-recaptcha', '#captcha', '[data-sitekey]', '.captcha', 'iframe[src*="recaptcha"]'];
       for (const selector of captchaSelectors) {
-        if (await this.page.locator(selector).isVisible({ timeout: 2000 })) {
+        if (await this.page.locator(selector).isVisible({ timeout: 800 })) {
           console.log(chalk.red('🔒 Captcha detected - manual intervention may be required'));
           await this.randomDelay(10000, 15000); // Wait longer for manual solving
           break;
@@ -175,7 +213,7 @@ export class TripAdvisorScraper {
       // Check for rate limiting messages
       const rateLimitTexts = ['too many requests', 'rate limit', 'slow down', 'try again later'];
       for (const text of rateLimitTexts) {
-        if (await this.page.locator(`:text("${text}")`).isVisible({ timeout: 2000 })) {
+        if (await this.page.locator(`:text("${text}")`).isVisible({ timeout: 600 })) {
           console.log(chalk.yellow(`⚠️  Rate limiting detected: ${text}`));
           await this.randomDelay(15000, 25000);
           break;
@@ -215,7 +253,7 @@ export class TripAdvisorScraper {
           if (await tab.isVisible({ timeout: 2000 })) {
             console.log(chalk.green(`📋 Found Reviews tab with selector: ${selector}`));
             await tab.click();
-            await this.randomDelay(3000, 5000);
+            await this.randomDelay(1000, 2000);
             break;
           }
         } catch (error) {
@@ -230,7 +268,7 @@ export class TripAdvisorScraper {
       }
       
       // Wait for content to stabilize
-      await this.randomDelay(3000, 5000);
+      await this.randomDelay(1000, 2000);
       
     } catch (error) {
       console.log(chalk.yellow('⚠️  Error triggering content loading, continuing...'));
@@ -255,7 +293,7 @@ export class TripAdvisorScraper {
         const button = closeButtons.nth(i);
         if (await button.isVisible({ timeout: 1000 })) {
           await button.click();
-          await this.randomDelay(500, 1000);
+          await this.randomDelay(200, 500);
         }
       }
     } catch (error) {
@@ -272,7 +310,7 @@ export class TripAdvisorScraper {
     const reviewsTab = this.page.getByRole('tab', { name: 'Reviews' });
     if (await reviewsTab.isVisible({ timeout: 2000 })) {
       await reviewsTab.click();
-      await this.randomDelay(3000, 5000);
+      await this.randomDelay(1000, 2000);
     }
 
     let totalReviewsLoaded = 0;
@@ -299,7 +337,7 @@ export class TripAdvisorScraper {
 
       // Click next page
       await nextButton.click();
-      await this.randomDelay(3000, 5000);
+      await this.randomDelay(1000, 2000);
       
       // Verify page changed by checking reviews loaded
       const newReviews = await this.page.locator('[data-reviewid]').count();
@@ -360,7 +398,7 @@ export class TripAdvisorScraper {
       hasMorePages = await this.navigateToNextPage();
       if (hasMorePages) {
         currentPage++;
-        await this.randomDelay(2000, 4000); // Delay between page loads
+        await this.randomDelay(800, 1500); // Reduced delay between page loads for speed
       } else {
         console.log(chalk.blue('📄 No more pages found'));
       }
@@ -375,8 +413,8 @@ export class TripAdvisorScraper {
     
     console.log(chalk.blue('📝 Extracting review data...'));
     
-    // Wait longer for dynamic content
-    await this.randomDelay(3000, 5000);
+    // Wait for dynamic content (reduced for speed)
+    await this.randomDelay(1000, 2000);
 
     // Find all review cards using multiple selectors for different page types
     console.log(chalk.yellow('🔍 Looking for review cards...'));
@@ -505,7 +543,7 @@ export class TripAdvisorScraper {
 
   private async processReviewCardsInParallel(reviewCards: any[]): Promise<Review[]> {
     const reviews: Review[] = [];
-    const concurrencyLimit = 10; // Process 5 reviews at a time to avoid overwhelming the page
+    const concurrencyLimit = 20; // Process more reviews in parallel for faster extraction
     
     console.log(chalk.blue(`🚀 Processing ${reviewCards.length} review cards in parallel (${concurrencyLimit} at a time)...`));
 
@@ -540,7 +578,7 @@ export class TripAdvisorScraper {
         
         // Small delay between batches to be respectful
         if (i + concurrencyLimit < reviewCards.length) {
-          await this.randomDelay(500, 1000);
+          await this.randomDelay(200, 500);
         }
 
       } catch (error) {
@@ -673,7 +711,7 @@ export class TripAdvisorScraper {
     return 0;
   }
 
-  private async getTextContent(card: any, selector: string, timeout: number = 2000): Promise<string> {
+  private async getTextContent(card: any, selector: string, timeout: number = 500): Promise<string> {
     try {
       const element = card.locator(selector).first();
       await element.waitFor({ timeout });
@@ -768,7 +806,7 @@ export class TripAdvisorScraper {
         
         for (const element of elements) {
           try {
-            await element.waitFor({ timeout: 1000 });
+            await element.waitFor({ timeout: 300 });
             const text = await element.textContent();
             
             if (text && text.trim() && 
@@ -819,14 +857,12 @@ export class TripAdvisorScraper {
   }
 
   private async extractReviewDate(card: any): Promise<string> {
+    // Optimized selectors for speed - focus on most successful patterns
     const selectors = [
-      // Look for "Date of stay:" text and get following span
-      'text="Date of stay:" >> xpath=following-sibling::span',
-      ':text("Date of stay:") + span',
-      // Find div containing "Date of stay:" then get span
-      'div:has-text("Date of stay:") span:last-child',
-      // Look for month/year patterns
+      // Look for month/year patterns (most common)
       'span:text-matches("(January|February|March|April|May|June|July|August|September|October|November|December) \\d{4}")',
+      // Look for "Date of stay:" text and get following span
+      ':text("Date of stay:") + span',
       'span:text-matches("\\w+ \\d{4}")',
       // Last resort - any span with date-like content
       'span:text-matches("\\d{4}")'
@@ -835,7 +871,7 @@ export class TripAdvisorScraper {
     for (const selector of selectors) {
       try {
         const element = card.locator(selector).first();
-        await element.waitFor({ timeout: 2000 });
+        await element.waitFor({ timeout: 400 });
         const text = await element.textContent();
         if (text && text.trim() && !text.includes('contributions') && !text.includes('helpful votes')) {
           console.log(chalk.gray(`    ✅ Found date with: ${selector}`));
@@ -851,16 +887,12 @@ export class TripAdvisorScraper {
   }
 
   private async extractReviewTitle(card: any): Promise<string> {
+    // Reduced selectors for speed - focus on most successful ones
     const selectors = [
-      // Use data attribute first (most stable)
-      '[data-test-target="review-title"]',
-      '[data-test-target="review-title"] a',
-      '[data-test-target="review-title"] span',
-      // Look for heading elements
-      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-      // Find clickable review title links
+      // Find clickable review title links (most common)
       'a[href*="ShowUserReviews"]',
-      'a[href*="Reviews"] span',
+      // Use data attribute (most stable)
+      '[data-test-target="review-title"]',
       // Fallback to large text elements
       'span:text-matches(".{10,100}")'
     ];
@@ -868,7 +900,7 @@ export class TripAdvisorScraper {
     for (const selector of selectors) {
       try {
         const element = card.locator(selector).first();
-        await element.waitFor({ timeout: 2000 });
+        await element.waitFor({ timeout: 400 });
         const text = await element.textContent();
         if (text && text.trim().length > 5 && text.trim().length < 200) {
           console.log(chalk.gray(`    ✅ Found title with: ${selector}`));
@@ -884,23 +916,20 @@ export class TripAdvisorScraper {
   }
 
   private async extractReviewText(card: any): Promise<string> {
+    // Optimized selectors for speed - focus on most successful ones
     const selectors = [
-      // Use data automation attribute (most stable)
-      '[data-automation*="reviewText"]',
-      '[data-automation^="reviewText"]',
-      // Look for text content spans with substantial content
+      // Look for text content spans with substantial content (most common)
       'span:text-matches(".{50,}")',
       // Find divs with review content
-      'div:has-text("Read more")',
       'div:text-matches(".{100,}")',
-      // Last resort - any long text content
-      ':text-matches(".{80,}")'
+      // Use data automation attribute (most stable)
+      '[data-automation*="reviewText"]'
     ];
 
     for (const selector of selectors) {
       try {
         const element = card.locator(selector).first();
-        await element.waitFor({ timeout: 2000 });
+        await element.waitFor({ timeout: 400 });
         const text = await element.textContent();
         if (text && text.trim().length > 20) {
           console.log(chalk.gray(`    ✅ Found text with: ${selector}`));
@@ -959,7 +988,7 @@ export class TripAdvisorScraper {
               nextButton.click()
             ]);
             
-            await this.randomDelay(3000, 5000); // Wait for page to load
+            await this.randomDelay(1000, 2000); // Wait for page to load
             console.log(chalk.green('✅ Successfully navigated to next page'));
             return true;
           }
