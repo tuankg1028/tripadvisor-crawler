@@ -56,7 +56,14 @@ async function openBrowser(userId: string): Promise<{ wsEndpoint: string; debugP
   );
 
   if (res.data.code !== 0) {
-    throw new Error(res.data.msg || 'Failed to start browser');
+    const errorMsg = res.data.msg || 'Failed to start browser';
+    
+    // Check for rate limiting
+    if (errorMsg.includes('Too many request per second') || errorMsg.includes('rate limit')) {
+      throw new Error('Too many request per second, please check');
+    }
+    
+    throw new Error(errorMsg);
   }
 
   const wsEndpoint = res.data.data?.ws.puppeteer;

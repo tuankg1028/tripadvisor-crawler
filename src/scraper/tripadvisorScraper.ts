@@ -40,7 +40,7 @@ export class TripAdvisorScraper {
     }
   }
 
-  async scrapeMultipleUrls(urls: string[], maxReviewsPerUrl?: number, parallelUrls: number = 3): Promise<ScrapingResult[]> {
+  async scrapeMultipleUrls(urls: string[], maxReviewsPerUrl?: number, parallelUrls: number = 2): Promise<ScrapingResult[]> {
     console.log(chalk.blue.bold(`🚀 Starting parallel batch scraping for ${urls.length} URLs...`));
     console.log(chalk.blue(`⚡ Processing up to ${Math.min(parallelUrls, urls.length)} URLs simultaneously`));
     console.log(chalk.blue('=========================================\n'));
@@ -52,16 +52,43 @@ export class TripAdvisorScraper {
       const batch = urls.slice(i, i + parallelUrls);
       console.log(chalk.cyan.bold(`\n📦 Processing batch ${Math.floor(i / parallelUrls) + 1} (${batch.length} URLs)`));
       
-      // Process batch in parallel
+      // Process batch in parallel with staggered initialization to avoid rate limiting
       const batchPromises = batch.map(async (url, batchIndex) => {
         const globalIndex = i + batchIndex;
         console.log(chalk.cyan(`🔗 [${globalIndex + 1}/${urls.length}] Starting: ${url}`));
+        
+        // Stagger browser initialization to avoid AdsPower rate limiting
+        if (batchIndex > 0) {
+          const delay = batchIndex * 2000; // 2 second delay between each browser startup
+          console.log(chalk.gray(`  ⏳ [${globalIndex + 1}/${urls.length}] Waiting ${delay}ms to avoid rate limiting...`));
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
         
         try {
           // Create a new scraper instance for each URL to avoid conflicts
           const scraper = new TripAdvisorScraper();
           if (this.profileName) {
-            await scraper.initialize(this.profileName);
+            console.log(chalk.gray(`  🚀 [${globalIndex + 1}/${urls.length}] Initializing browser...`));
+            
+            // Retry browser initialization up to 3 times with exponential backoff
+            let initRetries = 0;
+            const maxRetries = 3;
+            
+            while (initRetries < maxRetries) {
+              try {
+                await scraper.initialize(this.profileName);
+                break; // Success, exit retry loop
+              } catch (initError) {
+                initRetries++;
+                if (initRetries >= maxRetries) {
+                  throw initError; // Throw original error after max retries
+                }
+                
+                const retryDelay = Math.pow(2, initRetries) * 3000; // Exponential backoff: 6s, 12s, 24s
+                console.log(chalk.yellow(`  ⚠️ [${globalIndex + 1}/${urls.length}] Browser init failed (attempt ${initRetries}/${maxRetries}), retrying in ${retryDelay}ms...`));
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+              }
+            }
           }
           
           const result = await scraper.scrapeReviews(url, maxReviewsPerUrl);
